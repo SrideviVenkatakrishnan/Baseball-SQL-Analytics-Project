@@ -59,51 +59,169 @@ The project uses the following tables:
 
 #### PART I — School Analysis
 Questions Answered
-- How many schools produced players in each decade?
-- Which schools produced the most MLB players?
-- What were the top schools per decade?
+- Q1. How many schools produced players in each decade?
+```sql
+SELECT	FLOOR(yearID/10) * 10 AS decade, COUNT(DISTINCT schoolID) AS num_schools
+FROM	schools
+GROUP BY decade
+ORDER BY decade;
+```
 
-##### Techniques Used
-- COUNT(DISTINCT)
-- Decade grouping
-- Ranking with window functions
+- Q2. Which schools produced the most MLB players?
+```sql
+SELECT	sd.name_full, COUNT(DISTINCT s.playerID) AS num_players
+FROM	schools s
+LEFT JOIN school_details sd
+		ON s.schoolID = sd.schoolID
+GROUP BY s.schoolID
+ORDER BY num_players DESC
+LIMIT 5;
+```
+
+- Q3. What were the top schools per decade?
+```sql
+WITH ds AS (SELECT	FLOOR(s.yearID/10) * 10 AS decade, sd.name_full, COUNT(DISTINCT s.playerID) AS num_players
+			FROM	schools s
+			LEFT JOIN school_details sd
+					ON s.schoolID = sd.schoolID
+			GROUP BY decade, s.schoolID),
+	rn AS (SELECT	decade, name_full, num_players,
+					ROW_NUMBER() OVER (PARTITION BY decade ORDER BY num_players DESC) AS row_num
+		   FROM 	ds)
+SELECT	decade, name_full, num_players
+FROM	rn
+WHERE 	row_num <= 3
+ORDER BY decade DESC, row_num;
+```
 
 #### PART II — Salary Analysis
 Questions Answered
-- Which teams are in the top 20% for spending?
-- How has team spending accumulated over time?
-- When did teams surpass $1 billion in cumulative payroll?
+- Q1. Which teams are in the top 20% for spending?
+```sql
+WITH ts AS (SELECT	teamID, yearID, SUM(salary) AS total_spend
+			FROM	salaries
+			GROUP BY teamID, yearID
+			ORDER BY teamID, yearID),
+     sp AS (SELECT	teamID, AVG(total_spend) AS avg_spend,
+					NTILE(5) OVER (ORDER BY AVG(total_spend) DESC) AS spend_pct
+			FROM	ts
+			GROUP BY teamID)
+SELECT	teamID, ROUND(avg_spend / 1000000, 1) AS avg_spend_millions
+FROM 	sp
+WHERE	spend_pct = 1;
+```
 
-###### Techniques Used
-- Cumulative sums
-- NTILE()
-- Window functions
-- Salary aggregation
+- Q2. How has team spending accumulated over time?
+```sql
+WITH ts AS (SELECT	teamID, yearID, SUM(salary) AS total_spend
+			FROM	salaries
+			GROUP BY teamID, yearID
+			ORDER BY teamID, yearID)
+SELECT teamID, yearID,
+	   ROUND(SUM(total_spend) OVER (PARTITION BY teamID ORDER BY yearID)/1000000, 1) AS cumulative_sum_millions
+FROM ts;
+```
+
+- Q3. When did teams surpass $1 billion in cumulative payroll?
+```sql
+WITH ts AS (SELECT	teamID, yearID, SUM(salary) AS total_spend
+			FROM	salaries
+			GROUP BY teamID, yearID
+			ORDER BY teamID, yearID),
+	 cs AS (SELECT teamID, yearID,
+				   SUM(total_spend) OVER (PARTITION BY teamID ORDER BY yearID) AS cumulative_sum
+			FROM ts),
+	rn AS (SELECT	teamID, yearID, cumulative_sum,
+					ROW_NUMBER() OVER (PARTITION BY teamID ORDER BY cumulative_sum) AS rn
+		   FROM	cs
+		   WHERE	cumulative_sum > 1000000000)
+SELECT	teamID, yearID, ROUND(cumulative_sum/1000000000, 2) AS cumulative_sum_billions
+FROM	rn
+WHERE	rn = 1;
+```
 
 #### PART III — Player Career Analysis
 Questions Answered
-- What were players’ starting and ending ages?
-- How long were player careers?
-- Which teams did players start and end with?
-- Which players stayed with the same franchise for over a decade?
+- Q1. What were players’ starting & ending ages and their career length (all in years)?
+```sql
+SELECT	nameGiven, 
+		TIMESTAMPDIFF(YEAR, CAST(CONCAT(birthYear, '-', birthMOnth, '-', birthDay) AS DATE), debut) AS starting_age,
+        TIMESTAMPDIFF(YEAR, CAST(CONCAT(birthYear, '-', birthMOnth, '-', birthDay) AS DATE), finalGame) AS ending_age,        
+        TIMESTAMPDIFF(YEAR, debut, finalGame) AS career_length
+FROM	players
+ORDER BY career_length DESC;
+```
 
-###### Techniques Used
-- Date calculations
-- Career duration analysis
-- Multi-table joins
-- Player tracking
+- Q2. Which teams did players start and end with?
+```sql
+SELECT	p.nameGiven,
+		s.yearID AS starting_year, s.teamID AS starting_team, 
+        e.yearID AS ending_year, e.teamID AS ending_team
+FROM	players p
+JOIN 	salaries s
+		ON p.playerID = s.playerID
+        AND YEAR(p.debut) = s.yearID
+JOIN	salaries e
+		ON p.playerID = e.playerID
+        AND YEAR(finalGame) = e.yearID;
+```
+
+- Q3. Which players stayed with the same franchise for over a decade?
+```sql
+SELECT	p.nameGiven,
+		s.yearID AS starting_year, s.teamID AS starting_team, 
+        e.yearID AS ending_year, e.teamID AS ending_team
+FROM	players p
+JOIN 	salaries s
+		ON p.playerID = s.playerID
+        AND YEAR(p.debut) = s.yearID
+JOIN	salaries e
+		ON p.playerID = e.playerID
+        AND YEAR(finalGame) = e.yearID
+WHERE 	s.teamID = e.teamID
+		AND e.yearID - s.yearID > 10;
+```
 
 #### PART IV — Player Comparison Analysis
 Questions Answered
-- Which players share birthdays?
-- What percentage of players bat right, left, or switch for each team?
-- How have player height and weight changed over decades?
+- Q1. Which players share birthdays?
+```sql
+WITH bn AS (SELECT	CAST(CONCAT(birthYear, '-', birthMonth, '-', birthDay) AS DATE) AS birthdate,
+					nameGiven
+			FROM 	players)
+SELECT	birthdate, 
+		GROUP_CONCAT(nameGiven SEPARATOR ', ') AS players
+FROM	bn
+WHERE 	YEAR(birthdate) BETWEEN 1980 AND 1990
+GROUP BY birthdate
+ORDER BY birthdate;
+```
 
-##### Techniques Used
-- Conditional aggregation
-- GROUP_CONCAT()
-- LAG()
-- Trens analysis
+- Q2. What percentage of players bat right, left, or both for each team?
+```sql
+SELECT	s.teamID,
+		ROUND(SUM(CASE WHEN p.bats = 'R' THEN 1 ELSE 0 END)/COUNT(s.playerID) * 100, 1) AS bats_right,
+        ROUND(SUM(CASE WHEN p.bats = 'L' THEN 1 ELSE 0 END)/COUNT(s.playerID) * 100, 1) AS bats_left,
+        ROUND(SUM(CASE WHEN p.bats = 'B' THEN 1 ELSE 0 END)/COUNT(s.playerID) * 100, 1) AS bats_both
+FROM	players p
+JOIN	salaries s
+		ON p.playerID = s.playerID
+GROUP BY s.teamID
+ORDER BY s.teamID;
+```
+
+- Q3. How have player height and weight changed over decades?
+```sql
+WITH hw AS (SELECT	FLOOR(YEAR(debut)/10) * 10 AS decade, 
+					AVG(height) AS avg_height, AVG(weight) AS avg_weight
+			FROM	players
+			GROUP BY decade)
+SELECT	decade, 
+		avg_height - LAG(avg_height) OVER (ORDER BY decade) AS height_diff,
+        avg_weight - LAG(avg_weight) OVER (ORDER BY decade) AS weight_diff
+FROM	hw
+WHERE	decade IS NOT NULL;
+```
 
 #### Example Insights
 
