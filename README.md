@@ -223,9 +223,9 @@ FROM	hw
 WHERE	decade IS NOT NULL;
 ```
 
-#### Example Insights
+#### Key Insights
 
-Some insights generated from the analysis include:
+From the above analysis, we can conclude that
 - Certain schools consistently produce MLB talent across decades
 - Team payrolls have dramatically increased over time
 - A small number of franchises dominate cumulative salary spending
